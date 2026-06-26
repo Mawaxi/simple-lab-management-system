@@ -1,2 +1,3 @@
-lab_database.db
+lab_system.db
 __pycache__/
+*.pyc
