@@ -1,21 +1,18 @@
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
-import os
 from datetime import datetime
+import os
 
 app = Flask(__name__)
-app.secret_key = "lab_secret_key"
-
-basedir = os.path.abspath(os.path.dirname(__file__))
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(based_dir if 'based_dir' in locals() else basedir, 'lab_database.db')
+app.config['SECRET_KEY'] = 'lab-secret-key-123'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///lab_database.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
+app.config['UPLOAD_FOLDER'] = 'static/uploads'
 
-class Facility(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False, default="General Health Lab")
-    address = db.Column(db.String(200))
-    contact = db.Column(db.String(50))
+# Ensure upload folder exists
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+db = SQLAlchemy(app)
 
 class Patient(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -24,65 +21,84 @@ class Patient(db.Model):
     gender = db.Column(db.String(10))
     phone = db.Column(db.String(20))
     test_name = db.Column(db.String(100))
-    result = db.Column(db.Text)
+    result = db.Column(db.String(200))
+    status = db.Column(db.String(20), default='Pending')
     date_recorded = db.Column(db.DateTime, default=datetime.utcnow)
 
-def prepare_patient_list(patients):
-    formatted = []
-    for p in patients:
-        formatted.append({
-            'name': p.full_name.title(),
-            'test_display': f"{p.test_name}: {p.result}",
-            'date': p.date_recorded.strftime("%d %b %Y") if p.date_recorded else "N/A",
-            'id': p.id
-        })
-    return formatted
+class LabSettings(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    hospital_name = db.Column(db.String(100), default="Medical Laboratory")
+    logo_filename = db.Column(db.String(100))
+    watermark_text = db.Column(db.String(50), default="OFFICIAL COPY")
 
 with app.app_context():
     db.create_all()
-    if not Facility.query.first():
-        db.session.add(Facility(name="My Health Lab", address="123 Main St", contact="0123456789"))
+    # Create default settings if none exist
+    if not LabSettings.query.first():
+        db.session.add(LabSettings())
         db.session.commit()
 
 @app.route('/')
 def index():
-    facility = Facility.query.first()
-    patients_raw = Patient.query.all()
-    patients_prepared = prepare_patient_list(patients_raw)
-    return render_template('index.html', facility=facility, patients=patients_prepared)
-
-@app.route('/add_patient', methods=['POST'])
-def add_patient():
-    new_p = Patient(
-        full_name=request.form['name'],
-        age=request.form['age'],
-        gender=request.form['gender'],
-        phone=request.form['phone'],
-        test_name=request.form['test_name'],
-        result=request.form['result']
-    )
-    db.session.add(new_p)
-    db.session.commit()
-    flash("Patient record saved successfully!", "success")
-    return redirect(url_for('index'))
+    patients = Patient.query.order_by(Patient.date_recorded.desc()).all()
+    settings = LabSettings.query.first()
+    return render_template('index.html', patients=patients, settings=settings)
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
-    facility = Facility.query.first()
+    setting = LabSettings.query.first()
     if request.method == 'POST':
-        facility.name = request.form['name']
-        facility.address = request.form['address']
-        facility.contact = request.form['contact']
+        setting.hospital_name = request.form.get('hospital_name')
+        setting.watermark_text = request.form.get('watermark_text')
+        
+        file = request.files.get('logo')
+        if file:
+            filename = file.filename
+            file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+            setting.logo_filename = filename
+            
         db.session.commit()
-        flash("Facility settings updated!", "info")
+        flash('Settings updated successfully!')
         return redirect(url_for('index'))
-    return render_template('settings.html', facility=facility)
+    return render_template('settings.html', settings=setting)
+
+@app.route('/add', methods=['POST'])
+def add_patient():
+    new_patient = Patient(
+        full_name=request.form.get('full_name'), 
+        age=request.form.get('age'), 
+        gender=request.form.get('gender'), 
+        phone=request.form.get('phone'), 
+        test_name=request.form.get('test_name'), 
+        status='Pending'
+    )
+    db.session.add(new_patient)
+    db.session.commit()
+    flash('Patient added successfully!')
+    return redirect(url_for('index'))
+
+@app.route('/update/<int:id>', methods=['POST'])
+def update_patient(id):
+    patient = Patient.query.get(id)
+    patient.result = request.form.get('result')
+    patient.status = 'Completed'
+    db.session.commit()
+    flash('Result updated successfully!')
+    return redirect(url_for('index'))
+
+@app.route('/delete/<int:id>')
+def delete_patient(id):
+    patient = Patient.query.get(id)
+    db.session.delete(patient)
+    db.session.commit()
+    flash('Patient record deleted!')
+    return redirect(url_for('index'))
 
 @app.route('/print/<int:id>')
 def print_result(id):
-    patient = Patient.query.get_or_404(id)
-    facility = Facility.query.first()
-    return render_template('print_result.html', patient=patient, facility=facility)
+    patient = Patient.query.get(id)
+    settings = LabSettings.query.first()
+    return render_template('print_result.html', p=patient, settings=settings)
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8085)
+    app.run(port=8085, debug=True)
